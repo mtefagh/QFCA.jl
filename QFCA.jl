@@ -96,17 +96,22 @@ function reduceModel(model::Network)
     Rev[find(revType .== 3)] = 0;
     Rev = Rev[find(revType .!= 1)];
 
-    return Network(S, Rev);
+    (m, n) = size(S);
+    couplings = zeros(n, n);
+    reacNum = 1:n;
+    
+
+    return (Network(S, Rev), couplings, reacNum);
 end
 
 #finding all the reactions coupled to the given reaction in the argument of the function
 function coupled(model::Network, idx1::Nullable{Int64}, forward::Bool)
-    U = zeros(model.n + model.m, model.n);
-    V = zeros(model.n + model.m, model.n);
+    U = SharedArray{Float64,2}(zeros(model.n + model.m, model.n));
+    V = SharedArray{Float64,2}(zeros(model.n + model.m, model.n));
 
     (initU, initV) = opt(model, (forward ? +1 : -1)*ones(model.n + model.m), (forward ? +1 : -1)*ones(model.n + model.m), idx1, Nullable{Int64}(), forward);
 
-    for idx2 = 1:model.n
+    @sync @parallel for idx2 = 1:model.n
         (U[:, idx2], V[:, idx2]) = opt(model, initU, initV, idx1, Nullable(idx2), forward);
     end
 
@@ -177,20 +182,22 @@ end
 #quantitative metabolite coupling analysis
 function QMCA(model::Network)
     S = transpose(model.S);
-    S = S[[1:12; 14:19; 40:end], :];
     Rev = zeros(model.m);
     return QFCA(Network(S, Rev));
 end
 
-using DataFrames;
+using COBRA, DataFrames;
 #import the model
-model = Network(convert(Array{Float64}, readtable("S3.csv", header = false)), readtable("Irr3.csv", header = false)[1]);
+model = loadModel("ecoli_core_model.mat", "S", "model");
+#initializing a network instance with attributes from the model
+model = Network(model.S, 1*(model.lb .!= zeros(size(model.S)[2])));
 #finding all the coupling relationships among the metabolites
 @time couplingsM = QMCA(model)[end];
 #reduce the model
-@time model = reduceModel(model);
+#@time (model, couplings, reacNum) = reduceModel(model);
 #finding all the coupling relationships among the reactions
-@time couplings = QFCA(model)[end];
+@time couplings[reacNum, reacNum] = QFCA(model)[end];
+
 #exporting the results
 writetable("couplingsM.csv", DataFrame(couplingsM));
 writetable("couplings.csv", DataFrame(couplings));
